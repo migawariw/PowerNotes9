@@ -19,12 +19,12 @@ li{
   justify-content:space-between;
   align-items:center;
   position:relative;
-  user-select:none; /* 文字選択禁止 */
+  user-select:none; /* メモ文字選択不可 */
   cursor:default;
 }
 li:hover{background:#f5f5f5;}
 li .memo-title{flex:1;white-space: nowrap;overflow:hidden;text-overflow: ellipsis;margin-right:8px;}
-.menu-btn, .longpress-btn{user-select:none;} /* 文字選択禁止 */
+.menu-btn, .longpress-btn{user-select:none;} /* ボタン文字選択不可 */
 #title{width:100%;font-size:20px;margin:8px 0;border:none;padding:0;box-sizing:border-box;}
 #editor{min-height:70vh;outline:none;white-space:pre-wrap;word-break:break-word;border-top:1px solid #ccc;padding-top:16px;}
 img{max-width:100%;display:block;margin:8px 0;}
@@ -131,26 +131,21 @@ const closePreview=document.getElementById('close-preview');
 
 let currentMemoId=null;
 let longPressTimer=null;
-let isNavigating=false;
 
 /* --- トースト表示 --- */
 function showToast(msg,d=2000){ toast.textContent=msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'),d); }
 function show(view){ Object.values(views).forEach(v=>v.hidden=true); views[view].hidden=false; }
 
-/* --- Firebase Auth Provider --- */
+/* --- Auth --- */
 const provider=new GoogleAuthProvider();
-
-/* --- ログイン・サインアップ --- */
 document.getElementById('login').onclick=async()=>{ try{ await signInWithEmailAndPassword(auth,emailInput.value,passwordInput.value); } catch(e){ showToast("ログイン失敗: "+e.message); } };
 document.getElementById('signup').onclick=async()=>{ try{ await createUserWithEmailAndPassword(auth,emailInput.value,passwordInput.value); } catch(e){ showToast("サインアップ失敗: "+e.message); } };
 document.getElementById('google-login').onclick=async()=>{ try{ await signInWithPopup(auth,provider); } catch(e){ showToast("Googleログイン失敗: "+e.message); } };
-
-/* --- アカウントメニュー --- */
 userIcon.onclick=()=>{ userMenu.style.display=(userMenu.style.display==='block')?'none':'block'; }
 document.getElementById('switch-account').onclick=async()=>{ userMenu.style.display='none'; try{ await signInWithPopup(auth,provider); } catch(e){ showToast("切替失敗"); } }
 document.getElementById('logout-btn').onclick=()=>{ userMenu.style.display='none'; signOut(auth); location.hash='#login'; }
 
-/* --- 外部クリックで全てのメニュー閉じる --- */
+/* --- 外部クリックでメニュー閉じる --- */
 document.addEventListener('click',e=>{
   if(!userMenu.contains(e.target) && e.target!==userIcon) userMenu.style.display='none';
   document.querySelectorAll('.menu-popup').forEach(menu=>{
@@ -159,7 +154,7 @@ document.addEventListener('click',e=>{
   });
 });
 
-/* --- onAuthStateChanged --- */
+/* --- Auth state change --- */
 onAuthStateChanged(auth, async user=>{
   if(user){
     if(user.photoURL) userIcon.src=user.photoURL;
@@ -169,40 +164,33 @@ onAuthStateChanged(auth, async user=>{
 });
 window.addEventListener('hashchange',()=>{ if(auth.currentUser) navigate(); });
 
-/* --- メモ一覧ロード --- */
+/* --- Load memos --- */
 async function loadMemos(){
-  memoList.innerHTML=''; // 二重表示防止
+  memoList.innerHTML='';
   const q=query(collection(db,'users',auth.currentUser.uid,'memos'),orderBy('updated','desc'));
   const snap=await getDocs(q);
   snap.forEach(d=>{
     const data=d.data();
     if(data.deletedAt) return;
     const li=document.createElement('li');
-
-    const titleSpan=document.createElement('span');
-    titleSpan.className='memo-title';
-    titleSpan.textContent=data.title||'Untitled';
+    const titleSpan=document.createElement('span'); titleSpan.className='memo-title'; titleSpan.textContent=data.title||'Untitled';
     li.appendChild(titleSpan);
 
     const rightDiv=document.createElement('div'); rightDiv.className='memo-right';
     const dateSpan=document.createElement('span'); dateSpan.className='date-span';
-    dateSpan.textContent=new Date(data.updated).toLocaleString('ja-JP',{year:'numeric', month:'2-digit', day:'2-digit',hour:'2-digit', minute:'2-digit'});
-
+    dateSpan.textContent=new Date(data.updated).toLocaleString('ja-JP',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
     const menuBtn=document.createElement('button'); menuBtn.textContent='…'; menuBtn.className='menu-btn longpress-btn';
     const menuPopup=document.createElement('div'); menuPopup.className='menu-popup';
-
     const copyAction=document.createElement('button'); copyAction.textContent='Copy';
     copyAction.onclick=async(e)=>{ e.stopPropagation(); navigator.clipboard.writeText(data.content||''); showToast('Copied'); menuPopup.style.display='none'; }
     const deleteAction=document.createElement('button'); deleteAction.textContent='Delete';
     deleteAction.onclick=async(e)=>{ e.stopPropagation(); await setDoc(doc(db,'users',auth.currentUser.uid,'memos',d.id),{deletedAt:Date.now()},{merge:true}); li.remove(); showToast('Moved to Trash'); menuPopup.style.display='none'; }
-
     menuPopup.append(copyAction,deleteAction);
     menuBtn.onclick=(e)=>{ e.stopPropagation(); menuPopup.style.display=(menuPopup.style.display==='block')?'none':'block'; }
-
     rightDiv.append(dateSpan,menuBtn,menuPopup);
     li.appendChild(rightDiv);
 
-    // 長押しでプレビュー（ボタン部分のみ）
+    // 長押しプレビュー
     menuBtn.addEventListener('mousedown',()=>{ longPressTimer=setTimeout(()=>{ showPreview(d.id,data.title,data.content); },500); });
     menuBtn.addEventListener('mouseup',()=>{ clearTimeout(longPressTimer); });
     menuBtn.addEventListener('mouseleave',()=>{ clearTimeout(longPressTimer); });
@@ -214,8 +202,119 @@ async function loadMemos(){
   });
 }
 
-/* --- ここから画像・YouTube貼り付け・スマホ対応など完全機能 --- */
-/* --- 長くなるので必要ならさらに完全版作れる --- */
+/* --- Trash --- */
+async function loadTrash(){
+  trashList.innerHTML='';
+  const thirtyDaysAgo = Date.now() - 30*24*60*60*1000;
+  const q=query(collection(db,'users',auth.currentUser.uid,'memos'),orderBy('deletedAt','desc'));
+  const snap=await getDocs(q);
+  snap.forEach(d=>{
+    const data=d.data();
+    if(!data.deletedAt || data.deletedAt<thirtyDaysAgo) return;
+
+    const li=document.createElement('li');
+    const titleSpan=document.createElement('span'); titleSpan.className='memo-title'; titleSpan.textContent=data.title||'Untitled';
+    li.appendChild(titleSpan);
+
+    const rightDiv=document.createElement('div'); rightDiv.className='memo-right';
+    const dateSpan=document.createElement('span'); dateSpan.className='date-span';
+    dateSpan.textContent=new Date(data.deletedAt).toLocaleString('ja-JP',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const restoreBtn=document.createElement('button'); restoreBtn.textContent='Restore';
+    restoreBtn.onclick=async(e)=>{ e.stopPropagation(); await setDoc(doc(db,'users',auth.currentUser.uid,'memos',d.id),{deletedAt:null},{merge:true}); li.remove(); showToast('Restored'); }
+    const deleteBtn=document.createElement('button'); deleteBtn.textContent='Delete';
+    deleteBtn.onclick=async(e)=>{ e.stopPropagation(); await setDoc(doc(db,'users',auth.currentUser.uid,'memos',d.id),{deletedAt:Date.now()-31*24*60*60*1000},{merge:true}); li.remove(); showToast('Deleted'); }
+
+    rightDiv.append(dateSpan,restoreBtn,deleteBtn);
+    li.appendChild(rightDiv);
+    trashList.appendChild(li);
+  });
+}
+
+/* --- Editor --- */
+async function openEditor(id){
+  currentMemoId=id;
+  const snap=await getDoc(doc(db,'users',auth.currentUser.uid,'memos',id));
+  const data=snap.data();
+  titleInput.value=data.title||'';
+  editor.innerHTML=data.content||'';
+  show('editor');
+}
+titleInput.addEventListener('input',()=>saveMemo());
+editor.addEventListener('input',()=>saveMemo());
+
+async function saveMemo(){
+  if(!currentMemoId) return;
+  let title=titleInput.value.trim();
+  if(!title) title=editor.innerText.split('\n')[0].trim()||'';
+  await setDoc(doc(db,'users',auth.currentUser.uid,'memos',currentMemoId),
+    {title,content:editor.innerHTML,updated:Date.now()},{merge:true});
+}
+
+/* --- Paste handling --- */
+editor.addEventListener('paste', e=>{
+  e.preventDefault();
+  const items=e.clipboardData.items;
+  const range=document.getSelection().getRangeAt(0);
+
+  for(const item of items){
+    if(item.type.startsWith('image/')){
+      const reader=new FileReader();
+      reader.onload=()=>{ const img=document.createElement('img'); img.src=reader.result; range.insertNode(img); range.collapse(false); saveMemo(); }
+      reader.readAsDataURL(item.getAsFile());
+      return;
+    }
+  }
+
+  const text=e.clipboardData.getData('text/plain');
+  const yt=text.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]+)/);
+  if(yt){
+    const wrap=document.createElement('div'); wrap.className='video';
+    const iframe=document.createElement('iframe');
+    iframe.src=`https://www.youtube-nocookie.com/embed/${yt[1]}?modestbranding=1&rel=0&playsinline=1`;
+    iframe.allowFullscreen=true;
+    wrap.appendChild(iframe);
+    range.insertNode(wrap); range.collapse(false); saveMemo();
+    return;
+  }
+
+  const urlRegex=/https?:\/\/\S+\.(?:png|jpg|jpeg|gif)/i;
+  const m=text.match(urlRegex);
+  if(m){
+    const img=document.createElement('img'); img.src=m[0];
+    range.insertNode(img); range.collapse(false); saveMemo();
+    return;
+  }
+
+  range.insertNode(document.createTextNode(text));
+  range.collapse(false);
+  saveMemo();
+});
+
+/* --- Preview --- */
+function showPreview(id,title,content){
+  previewContent.innerHTML=`<strong>${title}</strong><br>${content}`;
+  preview.style.display='block';
+  copyBtn.onclick=()=>{ navigator.clipboard.writeText(content||''); showToast('Copied'); }
+  deleteBtn.onclick=async()=>{ await setDoc(doc(db,'users',auth.currentUser.uid,'memos',id),{deletedAt:Date.now()},{merge:true}); preview.style.display='none'; loadMemos(); showToast('Moved to Trash'); }
+  closePreview.onclick=()=>preview.style.display='none';
+}
+
+/* --- Navigation --- */
+document.getElementById('new-memo').onclick=async()=>{
+  const ref=await addDoc(collection(db,'users',auth.currentUser.uid,'memos'),{title:'',content:'',updated:Date.now(),deletedAt:null});
+  location.hash=`#/editor/${ref.id}`;
+}
+document.getElementById('go-trash').onclick=()=>{ location.hash='#/trash'; }
+document.getElementById('back-list').onclick=()=>{ location.hash='#/list'; }
+document.getElementById('back').onclick=()=>{ if(history.length>1) history.back(); else location.hash='#/list'; }
+
+async function navigate(){
+  const hash=location.hash;
+  if(hash.startsWith('#/editor/')) { show('editor'); await openEditor(hash.split('/')[2]); }
+  else if(hash==='#/list' || hash==='') { show('list'); await loadMemos(); }
+  else if(hash==='#/trash') { show('trash'); await loadTrash(); }
+  else if(hash==='#login') show('login');
+}
 </script>
 </body>
 </html>
